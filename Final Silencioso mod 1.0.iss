@@ -115,8 +115,7 @@ Name: "x_physx"; Description: "Instalar NVIDIA PhysX";                GroupDescr
 #endif
 
 [Files]
-; >>> UnRAR CLI y DLL embebidos (DLL solo para pre-scan de tamaños)
-Source: "{#ToolsDir}\unrar\cli\UnRAR.exe"; Flags: dontcopy
+; >>> UnRAR DLL embebida
 Source: "{#ToolsDir}\unrar\x86\UnRAR.dll";  Flags: dontcopy
 ; Branding
 #if USE_HEADER_BANNER
@@ -197,6 +196,11 @@ const
   TROGH_PULSES   = 8;
   TROGH_DELAY    = 120;
 
+  RAR_OM_EXTRACT   = 1;
+  RAR_EXTRACT      = 2;
+  ERAR_END_ARCHIVE = 10;
+  UCM_PROCESSDATA  = 1;
+
 var
   FinishImg: TBitmapImage;
   DummyResult: Integer;
@@ -205,6 +209,7 @@ var
   LastTick: Cardinal;
 
   TotalBytes: Int64;
+  BytesProcessed: Int64;
 
   // *** FIX Type mismatch: buffer ANSI vacío para RARProcessFile ***
   EmptyAnsi: AnsiString;
@@ -332,7 +337,7 @@ begin
   Result := FileExists(ExpandConstant('{tmp}\deps\dx\DXSETUP.exe'));
 end;
 
-// ------------ API UnRAR.DLL (solo para pre-scan de bytes) ------------
+// ------------ API UnRAR.DLL ------------
 type
   TRAROpenArchiveDataEx = record
     ArcName:    PAnsiChar;
@@ -388,6 +393,10 @@ function RARReadHeaderEx(hArcData: LongInt; var HeaderData: TRARHeaderDataEx): I
   external 'RARReadHeaderEx@files:UnRAR.dll stdcall';
 function RARProcessFile(hArcData: LongInt; Operation: Integer; DestPath, DestName: PAnsiChar): Integer;
   external 'RARProcessFile@files:UnRAR.dll stdcall';
+function RARSetCallback(hArcData: LongInt; Callback, UserData: LongInt): LongInt;
+  external 'RARSetCallback@files:UnRAR.dll stdcall';
+function RARSetProgressProc(hArcData: LongInt; Callback, UserData: LongInt): LongInt;
+  external 'RARSetProgressProc@files:UnRAR.dll stdcall';
 function RARCloseArchive(hArcData: LongInt): Integer;
   external 'RARCloseArchive@files:UnRAR.dll stdcall';
 
@@ -444,157 +453,93 @@ begin
   RARCloseArchive(h);
 end;
 
-// ------------ Tamaño real en disco del destino (para progreso) ------------
-function CreateFileA(lpFileName: PAnsiChar; dwDesiredAccess, dwShareMode: Cardinal;
-  lpSecurityAttributes: LongInt; dwCreationDisposition, dwFlagsAndAttributes: Cardinal;
-  hTemplateFile: LongInt): Integer;
-  external 'CreateFileA@kernel32.dll stdcall';
-function GetFileSizeEx(hFile: Integer; var lpFileSize: Int64): Boolean;
-  external 'GetFileSizeEx@kernel32.dll stdcall';
-function CloseHandle(hObject: Integer): Boolean;
-  external 'CloseHandle@kernel32.dll stdcall';
-
-function FileSizeByHandle(const FilePath: string): Int64;
-var h: Integer; sz: Int64; a: AnsiString;
-begin
-  Result := 0;
-  a := AnsiString(FilePath);
-  h := CreateFileA(PAnsiChar(a), $80000000 {GENERIC_READ}, $00000001 or $00000002, 0,
-                   3 {OPEN_EXISTING}, $80 {FILE_ATTRIBUTE_NORMAL}, 0);
-  if h <> -1 then
-  begin
-    if GetFileSizeEx(h, sz) then Result := sz;
-    CloseHandle(h);
-  end;
-end;
-
-function DirSizeBytes(Path: string): Int64;
-var FR: TFindRec; p: string;
-begin
-  Result := 0;
-  if not DirExists(Path) then Exit;
-  p := AddBackslash(Path);
-  if FindFirst(p + '*', FR) then
-  begin
-    try
-      repeat
-        if (FR.Name <> '.') and (FR.Name <> '..') then
-        begin
-          if (FR.Attributes and $10) <> 0 then
-            Result := Result + DirSizeBytes(p + FR.Name)
-          else
-            Result := Result + FileSizeByHandle(p + FR.Name);
-        end;
-      until not FindNext(FR);
-    finally
-      FindClose(FR);
-    end;
-  end;
-end;
-
 function TrimTrailingSlashUnlessRoot(const S: string): string;
+
 var R: string;
 begin
   R := S;
   while (Length(R) > 3) and (Copy(R, Length(R), 1) = '\') do
     SetLength(R, Length(R) - 1);
-  Result := R;
+ Result := R;
 end;
 
-procedure TrackProgressByDirSize(const TitleBase, DestDir, DoneSentinel, FailSentinel: string; Total: Int64);
-var pct: Integer; bytes: Int64; shown: Integer;
+
+function RARCallbackProc(msg, UserData, P1, P2: Integer): Integer; stdcall;
+var pct: Integer;
 begin
-  shown := -1;
-  repeat
-    bytes := DirSizeBytes(DestDir);
-    if (Total > 0) and (bytes > 0) then
-      pct := Integer((bytes * 100) div Total)
+  if msg = UCM_PROCESSDATA then
+  begin
+    BytesProcessed := BytesProcessed + Int64(P2);
+    if TotalBytes > 0 then
+      pct := Integer((BytesProcessed * 100) div TotalBytes)
     else
       pct := 0;
-
-    if pct > 99 then pct := 99;   // 100% solo cuando DONE exista
-    if pct <> shown then
-    begin
-      UpdateGaugeCaption(Format('Extrayendo "%s" (%d%%)…', [TitleBase, pct]), pct, True);
-      shown := pct;
-    end;
-    Sleep(350);
-  until FileExists(DoneSentinel) or FileExists(FailSentinel);
-
-  if FileExists(DoneSentinel) then
-    UpdateGaugeCaption(Format('Extrayendo "%s" (100%%)…', [TitleBase]), 100, True);
+    UpdateGaugeCaption(Format('Extrayendo "%s" (%d%%)…', ['{#RAR_BASENAME}', pct]), pct, False);
+  end;
+  Result := 0;
 end;
 
-function Tail(const S: string; MaxLen: Integer): string;
-begin
-  if Length(S) <= MaxLen then
-    Result := S
-  else
-    Result := Copy(S, Length(S) - MaxLen + 1, MaxLen);
-end;
-
-procedure DoExtractWithCLI(const FirstPart, DestDir: string);
+procedure DoExtractWithDll(const FirstPart, DestDir: string);
 var
-  srcDir, arcName, unrarExe, logFile, doneFile, failFile, cmdParams, destNoSlash: string;
-  ok: Boolean;
-  rc: Integer;
-  logText: AnsiString;
-  total: Int64;
+  ao: TRAROpenArchiveDataEx;
+  hd: TRARHeaderDataEx;
+  h, rc, i: Integer;
+  destNoSlash: string;
 begin
-  ExtractTemporaryFile('UnRAR.exe');
-  unrarExe := ExpandConstant('{tmp}\UnRAR.exe');
-
-  srcDir   := ExtractFileDir(FirstPart);
-  arcName  := ExtractFileName(FirstPart);
-  logFile  := ExpandConstant('{tmp}\unrar_log.txt');
-  doneFile := ExpandConstant('{tmp}\unrar_done.txt');
-  failFile := ExpandConstant('{tmp}\unrar_fail.txt');
-
-  if FileExists(logFile)  then DeleteFile(logFile);
-  if FileExists(doneFile) then DeleteFile(doneFile);
-  if FileExists(failFile) then DeleteFile(failFile);
-
   destNoSlash := TrimTrailingSlashUnlessRoot(DestDir);
   if not DirExists(destNoSlash) then
     if not CreateDir(destNoSlash) then
       RaiseException('No se pudo crear el destino: ' + destNoSlash);
 
-  // -- PRE-SCAN exacto (como Final 2.0) para tener TotalBytes
-  total := PreScanRAR(FirstPart, '{#RAR_PASSWORD}');
-  if total <= 0 then total := {#GAME_SIZE_BYTES};
-  TotalBytes := total;
+  TotalBytes := PreScanRAR(FirstPart, '{#RAR_PASSWORD}');
+  if TotalBytes <= 0 then TotalBytes := {#GAME_SIZE_BYTES};
 
+  BytesProcessed := 0;
   LastPct := -1; LastTick := 0;
   UpdateGaugeCaption('Preparando extracción…', 0, True);
 
-  cmdParams :=
-    '/C ""' + unrarExe + '" x -y -o+ -p' + '{#RAR_PASSWORD}' +
-    ' "' + arcName + '" "' + destNoSlash +
-    '" > "' + logFile + '" 2>&1 && echo done>"' + doneFile +
-    '" || echo fail>"' + failFile + '""';
+  EmptyAnsi := '';
+  ao.ArcName := PAnsiChar(AnsiString(FirstPart));
+  ao.ArcNameW := 0;
+  ao.OpenMode := RAR_OM_EXTRACT;
+  ao.OpenResult := 0;
+  ao.CmtBuf := 0; ao.CmtBufSize := 0; ao.CmtSize := 0; ao.CmtState := 0; ao.Flags := 0;
+  for i := 0 to 31 do ao.Reserved[i] := 0;
 
-  ok := Exec(ExpandConstant('{cmd}'), cmdParams, srcDir, SW_HIDE, ewNoWait, rc);
-  if not ok then
-    RaiseException('No se pudo iniciar UnRAR.exe (CLI).');
+  h := RAROpenArchiveEx(ao);
+  if h = 0 then
+    RaiseException('No se pudo abrir el archivo RAR.');
 
-  // -- Progreso real por bytes escritos en destino
-  TrackProgressByDirSize('{#RAR_BASENAME}', destNoSlash, doneFile, failFile, total);
+  RARSetPassword(h, PAnsiChar(AnsiString('{#RAR_PASSWORD}')));
+  RARSetCallback(h, CreateCallback(@RARCallbackProc), 0);
+  RARSetProgressProc(h, CreateCallback(@RARCallbackProc), 0);
 
-  if FileExists(failFile) then
+  while True do
   begin
-    if LoadStringFromFile(logFile, logText) then
-      MsgBox('Fallo de extracción (CLI).'#13#10#13#10 + Tail(String(logText), 4000),
-             mbCriticalError, MB_OK)
-    else
-      MsgBox('Fallo de extracción (CLI). Revisa el log en: ' + logFile,
-             mbCriticalError, MB_OK);
-    RaiseException('Extracción interrumpida por error (ver log).');
+    rc := RARReadHeaderEx(h, hd);
+    if rc = ERAR_END_ARCHIVE then Break;
+    if rc <> 0 then
+    begin
+      RARCloseArchive(h);
+      RaiseException('Error leyendo cabecera.');
+    end;
+
+    rc := RARProcessFile(h, RAR_EXTRACT, PAnsiChar(AnsiString(destNoSlash)), PAnsiChar(EmptyAnsi));
+    if rc <> 0 then
+    begin
+      RARCloseArchive(h);
+      RaiseException('Error extrayendo archivo.');
+    end;
   end;
+
+  RARCloseArchive(h);
+  UpdateGaugeCaption(Format('Extrayendo "%s" (100%%)…', ['{#RAR_BASENAME}']), 100, True);
 end;
 
 //
 // Focus fix
 //
+
 function IsIconic(hWnd: Integer): Boolean; external 'IsIconic@user32.dll stdcall';
 function ShowWindow(hWnd: Integer; nCmdShow: Integer): Boolean; external 'ShowWindow@user32.dll stdcall';
 function SetForegroundWindow(hWnd: Integer): Boolean; external 'SetForegroundWindow@user32.dll stdcall';
@@ -644,10 +589,11 @@ begin
     WizardForm.ProgressGauge.Repaint;
     WizardForm.StatusLabel.Repaint;
 
-    DoExtractWithCLI(firstPart, destDir);
+    DoExtractWithDll(firstPart, destDir);
   end;
 
   if (CurStep = ssDone) and (not WizardSilent) then
     Exec('rundll32.exe', 'url.dll,FileProtocolHandler "' + '{#MyURL}' + '"',
          '', SW_SHOWNORMAL, ewNoWait, DummyResult);
 end;
+
