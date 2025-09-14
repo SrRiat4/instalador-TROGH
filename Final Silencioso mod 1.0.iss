@@ -407,6 +407,19 @@ begin
   Result := t + Int64(Low);
 end;
 
+function RarOpenErrorMessage(Code: Cardinal): string;
+begin
+  case Code of
+    11: Result := 'Memoria insuficiente al abrir el RAR.';
+    12, 13: Result := 'Archivo RAR dañado.';
+    14: Result := 'Formato de archivo RAR desconocido o inválido.';
+    15: Result := 'No se pudo abrir el archivo RAR (¿archivo inexistente?).';
+    22: Result := 'Falta contraseña para abrir el RAR.';
+  else
+    Result := Format('Error al abrir archivo RAR (código %d).', [Code]);
+  end;
+end;
+
 function PreScanRAR(const FirstPart, Password: string): Int64;
 var
   ao: TRAROpenArchiveDataEx;
@@ -427,7 +440,8 @@ begin
   for i := 0 to 31 do ao.Reserved[i] := 0;
 
   h := RAROpenArchiveEx(ao);
-  if h = 0 then Exit;
+  if (h = 0) or (ao.OpenResult <> 0) then
+    RaiseException(RarOpenErrorMessage(ao.OpenResult));
 
   RARSetPassword(h, PAnsiChar(AnsiString(Password)));
 
@@ -507,8 +521,8 @@ begin
   for i := 0 to 31 do ao.Reserved[i] := 0;
 
   h := RAROpenArchiveEx(ao);
-  if h = 0 then
-    RaiseException('No se pudo abrir el archivo RAR.');
+  if (h = 0) or (ao.OpenResult <> 0) then
+    RaiseException(RarOpenErrorMessage(ao.OpenResult));
 
   RARSetPassword(h, PAnsiChar(AnsiString('{#RAR_PASSWORD}')));
   cb := CreateCallback(@RARCallbackProc);
@@ -595,6 +609,7 @@ begin
     Exec('rundll32.exe', 'url.dll,FileProtocolHandler "' + '{#MyURL}' + '"',
          '', SW_SHOWNORMAL, ewNoWait, DummyResult);
 end;
+
 
 
 
