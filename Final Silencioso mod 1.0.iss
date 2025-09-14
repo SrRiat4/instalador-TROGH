@@ -196,6 +196,7 @@ const
   TROGH_PULSES   = 8;
   TROGH_DELAY    = 120;
 
+  RAR_SKIP         = 0;
   RAR_OM_EXTRACT   = 1;
   RAR_EXTRACT      = 2;
   ERAR_END_ARCHIVE = 10;
@@ -395,8 +396,6 @@ function RARProcessFile(hArcData: LongInt; Operation: Integer; DestPath, DestNam
   external 'RARProcessFile@files:UnRAR.dll stdcall';
 function RARSetCallback(hArcData: LongInt; Callback, UserData: LongInt): LongInt;
   external 'RARSetCallback@files:UnRAR.dll stdcall';
-function RARSetProgressProc(hArcData: LongInt; Callback, UserData: LongInt): LongInt;
-  external 'RARSetProgressProc@files:UnRAR.dll stdcall';
 function RARCloseArchive(hArcData: LongInt): Integer;
   external 'RARCloseArchive@files:UnRAR.dll stdcall';
 
@@ -446,7 +445,7 @@ begin
     end;
 
     // evitar pasar literales -> usar punteros a buffer ANSI
-    rc := RARProcessFile(h, 0 {RAR_SKIP}, PAnsiChar(EmptyAnsi), PAnsiChar(EmptyAnsi));
+    rc := RARProcessFile(h, RAR_SKIP, PAnsiChar(EmptyAnsi), PAnsiChar(EmptyAnsi));
     if rc <> 0 then Break;
   end;
 
@@ -512,7 +511,6 @@ begin
 
   RARSetPassword(h, PAnsiChar(AnsiString('{#RAR_PASSWORD}')));
   RARSetCallback(h, CreateCallback(@RARCallbackProc), 0);
-  RARSetProgressProc(h, CreateCallback(@RARCallbackProc), 0);
 
   while True do
   begin
@@ -596,4 +594,5 @@ begin
     Exec('rundll32.exe', 'url.dll,FileProtocolHandler "' + '{#MyURL}' + '"',
          '', SW_SHOWNORMAL, ewNoWait, DummyResult);
 end;
+
 
