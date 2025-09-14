@@ -484,6 +484,7 @@ var
   hd: TRARHeaderDataEx;
   h, rc, i: Integer;
   destNoSlash: string;
+  cb: LongInt;
 begin
   destNoSlash := TrimTrailingSlashUnlessRoot(DestDir);
   if not DirExists(destNoSlash) then
@@ -510,27 +511,27 @@ begin
     RaiseException('No se pudo abrir el archivo RAR.');
 
   RARSetPassword(h, PAnsiChar(AnsiString('{#RAR_PASSWORD}')));
-  RARSetCallback(h, CreateCallback(@RARCallbackProc), 0);
+  cb := CreateCallback(@RARCallbackProc);
+  try
+    RARSetCallback(h, cb, 0);
+    try
+      while True do
+      begin
+        rc := RARReadHeaderEx(h, hd);
+        if rc = ERAR_END_ARCHIVE then Break;
+        if rc <> 0 then
+          RaiseException('Error leyendo cabecera.');
 
-  while True do
-  begin
-    rc := RARReadHeaderEx(h, hd);
-    if rc = ERAR_END_ARCHIVE then Break;
-    if rc <> 0 then
-    begin
+        rc := RARProcessFile(h, RAR_EXTRACT, PAnsiChar(AnsiString(destNoSlash)), PAnsiChar(EmptyAnsi));
+        if rc <> 0 then
+          RaiseException('Error extrayendo archivo.');
+      end;
+    finally
       RARCloseArchive(h);
-      RaiseException('Error leyendo cabecera.');
     end;
-
-    rc := RARProcessFile(h, RAR_EXTRACT, PAnsiChar(AnsiString(destNoSlash)), PAnsiChar(EmptyAnsi));
-    if rc <> 0 then
-    begin
-      RARCloseArchive(h);
-      RaiseException('Error extrayendo archivo.');
-    end;
+  finally
+    DestroyCallback(cb);
   end;
-
-  RARCloseArchive(h);
   UpdateGaugeCaption(Format('Extrayendo "%s" (100%%)…', ['{#RAR_BASENAME}']), 100, True);
 end;
 
@@ -594,5 +595,6 @@ begin
     Exec('rundll32.exe', 'url.dll,FileProtocolHandler "' + '{#MyURL}' + '"',
          '', SW_SHOWNORMAL, ewNoWait, DummyResult);
 end;
+
 
 
